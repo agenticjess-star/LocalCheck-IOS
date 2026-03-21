@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(AppState.self) private var appState
     @State private var selectedTab: Int = 0
 
     var body: some View {
@@ -23,5 +24,23 @@ struct ContentView: View {
         }
         .tint(Theme.orange)
         .preferredColorScheme(.dark)
+        .alert("Something went wrong", isPresented: errorAlertIsPresented) {
+            Button("OK", role: .cancel) {
+                appState.errorMessage = nil
+            }
+        } message: {
+            Text(appState.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private var errorAlertIsPresented: Binding<Bool> {
+        Binding(
+            get: { appState.errorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    appState.errorMessage = nil
+                }
+            }
+        )
     }
 }

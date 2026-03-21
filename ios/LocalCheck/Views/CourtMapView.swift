@@ -94,6 +94,22 @@ struct CourtMapView: View {
                     .font(.caption)
                     .foregroundStyle(court.isConfirmed ? Theme.green : Theme.textTertiary)
             }
+            Button {
+                Task {
+                    await appState.updateLocalCourt(courtID: court.id)
+                }
+            } label: {
+                Text(court.id == appState.localCourt?.id ? "Current Local Court" : "Set as Local Court")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(court.id == appState.localCourt?.id ? Theme.green : .white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 42)
+                    .background(
+                        court.id == appState.localCourt?.id ? Theme.green.opacity(0.15) : Theme.orange,
+                        in: .rect(cornerRadius: 12)
+                    )
+            }
+            .disabled(court.id == appState.localCourt?.id)
         }
         .padding(16)
         .background(.ultraThinMaterial)

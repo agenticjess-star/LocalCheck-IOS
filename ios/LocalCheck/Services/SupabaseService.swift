@@ -8,25 +8,45 @@
 import Foundation
 
 // MARK: - Config
-// IMPORTANT: Replace CURRENT_USER_ID at runtime with Supabase auth UID
-// For now it falls back to the seeded profile ID for development
+// IMPORTANT: Replace the development user flow with Supabase Auth for production.
+// Until then, the app can persist a live profile selection for local development.
 
 enum SupabaseConfig {
     static let url = "https://jzclwnzcektqhgkkdeje.supabase.co"
     static let anonKey = "sb_publishable_oL6OFCLyIPWUuxv27tqZUQ_1i7WYcHS"
-    // TODO: Replace with Supabase Auth → get currentUser.id on sign-in
-    static var currentUserID: String = "7d9c399c-9672-4277-9aa3-5acebab78e4e"
+    static let currentUserDefaultsKey = "localcheck.currentUserID"
+    static let developmentUserID = "7d9c399c-9672-4277-9aa3-5acebab78e4e"
+
+    static var initialCurrentUserID: String {
+        if let storedID = UserDefaults.standard.string(forKey: currentUserDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !storedID.isEmpty {
+            return storedID
+        }
+        return developmentUserID
+    }
 }
 
 // MARK: - SupabaseService
 actor SupabaseService {
     static let shared = SupabaseService()
     private let base = URL(string: SupabaseConfig.url)!
-    private var headers: [String: String] {
-        ["apikey": SupabaseConfig.anonKey,
-         "Authorization": "Bearer \(SupabaseConfig.anonKey)",
-         "Content-Type": "application/json",
-         "Prefer": "return=representation"]
+
+    private func headers(prefer: String = "return=representation") -> [String: String] {
+        [
+            "apikey": SupabaseConfig.anonKey,
+            "Authorization": "Bearer \(SupabaseConfig.anonKey)",
+            "Content-Type": "application/json",
+            "Prefer": prefer,
+        ]
+    }
+
+    private func responseData(for request: URLRequest) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            throw AppError.server("HTTP \(http.statusCode): \(String(data: data, encoding: .utf8) ?? "")")
+        }
+        return data
     }
 
     // MARK: - HTTP helpers
@@ -34,37 +54,53 @@ actor SupabaseService {
         var comps = URLComponents(url: base.appendingPathComponent("/rest/v1/\(table)"), resolvingAgainstBaseURL: true)!
         comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         var req = URLRequest(url: comps.url!)
-        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
-            throw AppError.server("HTTP \(http.statusCode): \(String(data: data, encoding: .utf8) ?? "")")
-        }
+        headers().forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        let data = try await responseData(for: req)
         return try JSONDecoder.supabase.decode(T.self, from: data)
     }
 
-    private func post<T: Decodable>(_ table: String, body: some Encodable) async throws -> T {
+    private func post<T: Decodable>(
+        _ table: String,
+        body: some Encodable,
+        prefer: String = "return=representation"
+    ) async throws -> T {
         var req = URLRequest(url: base.appendingPathComponent("/rest/v1/\(table)"))
         req.httpMethod = "POST"
-        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        headers(prefer: prefer).forEach { req.setValue($1, forHTTPHeaderField: $0) }
         req.httpBody = try JSONEncoder.supabase.encode(body)
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let data = try await responseData(for: req)
         return try JSONDecoder.supabase.decode(T.self, from: data)
     }
 
-    private func patch(_ table: String, matching: [String: String], body: some Encodable) async throws {
+    private func postNoResponse(_ table: String, body: some Encodable) async throws {
+        var req = URLRequest(url: base.appendingPathComponent("/rest/v1/\(table)"))
+        req.httpMethod = "POST"
+        headers(prefer: "return=minimal").forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        req.httpBody = try JSONEncoder.supabase.encode(body)
+        _ = try await responseData(for: req)
+    }
+
+    private func patch(_ table: String, filters: [String: String], body: some Encodable) async throws {
         var comps = URLComponents(url: base.appendingPathComponent("/rest/v1/\(table)"), resolvingAgainstBaseURL: true)!
-        comps.queryItems = matching.map { URLQueryItem(name: $0.key, value: "eq.\($0.value)") }
+        comps.queryItems = filters.map { URLQueryItem(name: $0.key, value: $0.value) }
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "PATCH"
-        headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        headers(prefer: "return=minimal").forEach { req.setValue($1, forHTTPHeaderField: $0) }
         req.httpBody = try JSONEncoder.supabase.encode(body)
-        _ = try await URLSession.shared.data(for: req)
+        _ = try await responseData(for: req)
+    }
+
+    private func isDuplicateConflict(_ error: Error) -> Bool {
+        guard let appError = error as? AppError else { return false }
+        guard case let .server(message) = appError else { return false }
+        return message.contains("409") || message.localizedCaseInsensitiveContains("duplicate")
     }
 
     // MARK: - Profiles
-    func fetchCurrentPlayer() async throws -> Player {
+    func fetchCurrentPlayer(userID: String) async throws -> Player {
         let rows: [ProfileRow] = try await get("profiles", query: [
-            "id": "eq.\(SupabaseConfig.currentUserID)", "select": "*"
+            "id": "eq.\(userID)",
+            "select": "*",
         ])
         guard let row = rows.first else { throw AppError.notFound("profile") }
         return row.toPlayer()
@@ -72,7 +108,9 @@ actor SupabaseService {
 
     func fetchPlayers(localCourtID: String? = nil) async throws -> [Player] {
         var q: [String: String] = ["select": "*", "order": "elo_rating.desc"]
-        if let id = localCourtID { q["local_court_id"] = "eq.\(id)" }
+        if let id = localCourtID {
+            q["local_court_id"] = "eq.\(id)"
+        }
         let rows: [ProfileRow] = try await get("profiles", query: q)
         return rows.map { $0.toPlayer() }
     }
@@ -80,18 +118,17 @@ actor SupabaseService {
     // MARK: - Courts (use the view which includes stats)
     func fetchCourts() async throws -> [Court] {
         let rows: [CourtWithStatsRow] = try await get("courts_with_stats", query: [
-            "select": "*", "order": "local_player_count.desc"
+            "select": "*",
+            "order": "local_player_count.desc",
         ])
         return rows.map { $0.toCourt() }
     }
 
-    func fetchLocalCourt() async throws -> Court? {
-        let rows: [ProfileRow] = try await get("profiles", query: [
-            "id": "eq.\(SupabaseConfig.currentUserID)", "select": "local_court_id"
-        ])
-        guard let courtID = rows.first?.local_court_id else { return nil }
+    func fetchCourt(id: String?) async throws -> Court? {
+        guard let id, !id.isEmpty else { return nil }
         let courts: [CourtWithStatsRow] = try await get("courts_with_stats", query: [
-            "id": "eq.\(courtID)", "select": "*"
+            "id": "eq.\(id)",
+            "select": "*",
         ])
         return courts.first?.toCourt()
     }
@@ -99,26 +136,38 @@ actor SupabaseService {
     // MARK: - Check-ins (use the active_check_ins view)
     func fetchActiveCheckIns(courtID: String) async throws -> [CheckIn] {
         let rows: [ActiveCheckInRow] = try await get("active_check_ins", query: [
-            "court_id": "eq.\(courtID)", "select": "*", "order": "timestamp.desc"
+            "court_id": "eq.\(courtID)",
+            "select": "*",
+            "order": "timestamp.desc",
         ])
         return rows.map { $0.toCheckIn() }
     }
 
-    func checkIn(courtID: String, note: String?) async throws {
+    func checkIn(userID: String, courtID: String, note: String?) async throws {
         struct Body: Encodable {
-            let user_id: String; let court_id: String; let note: String?
+            let user_id: String
+            let court_id: String
+            let note: String?
         }
-        let _: [[String: String]] = try await post("check_ins", body: Body(
-            user_id: SupabaseConfig.currentUserID,
+
+        try await postNoResponse("check_ins", body: Body(
+            user_id: userID,
             court_id: courtID,
             note: note
         ))
     }
 
     func checkOut(userID: String, courtID: String) async throws {
-        struct Body: Encodable { let checked_out_at: String }
+        struct Body: Encodable {
+            let checked_out_at: String
+        }
+
         try await patch("check_ins",
-            matching: ["user_id": userID, "court_id": courtID, "checked_out_at": "null"],
+            filters: [
+                "user_id": "eq.\(userID)",
+                "court_id": "eq.\(courtID)",
+                "checked_out_at": "is.null",
+            ],
             body: Body(checked_out_at: ISO8601DateFormatter().string(from: Date()))
         )
     }
@@ -126,17 +175,24 @@ actor SupabaseService {
     // MARK: - Feed (use the view which includes author/court names + like counts)
     func fetchCourtFeed(courtID: String) async throws -> [FeedPost] {
         let rows: [FeedPostWithCountsRow] = try await get("feed_posts_with_counts", query: [
-            "court_id": "eq.\(courtID)", "select": "*", "order": "timestamp.desc", "limit": "30"
+            "court_id": "eq.\(courtID)",
+            "select": "*",
+            "order": "timestamp.desc",
+            "limit": "30",
         ])
         return rows.map { $0.toFeedPost() }
     }
 
-    func postToFeed(courtID: String, content: String, type: FeedPost.PostType) async throws {
+    func postToFeed(userID: String, courtID: String, content: String, type: FeedPost.PostType) async throws {
         struct Body: Encodable {
-            let author_id: String; let court_id: String; let content: String; let post_type: String
+            let author_id: String
+            let court_id: String
+            let content: String
+            let post_type: String
         }
-        let _: [[String: String]] = try await post("feed_posts", body: Body(
-            author_id: SupabaseConfig.currentUserID,
+
+        try await postNoResponse("feed_posts", body: Body(
+            author_id: userID,
             court_id: courtID,
             content: content,
             post_type: type.rawValue
@@ -146,56 +202,130 @@ actor SupabaseService {
     // MARK: - Games (use games_with_counts view + participants separately)
     func fetchRecentGames(courtID: String? = nil) async throws -> [Game] {
         var q: [String: String] = ["select": "*", "order": "date.desc", "limit": "20"]
-        if let id = courtID { q["court_id"] = "eq.\(id)" }
+        if let id = courtID {
+            q["court_id"] = "eq.\(id)"
+        }
         let gameRows: [GameWithCountsRow] = try await get("games_with_counts", query: q)
-        // Fetch participants for these games
-        let gameIDs = gameRows.map { $0.id }.joined(separator: ",")
+        return try await hydrateGames(from: gameRows)
+    }
+
+    func fetchRecentGames(forUserID userID: String) async throws -> [Game] {
+        let membershipRows: [GameMembershipRow] = try await get("game_participants", query: [
+            "user_id": "eq.\(userID)",
+            "select": "game_id",
+        ])
+        let uniqueGameIDs = Array(Set(membershipRows.map(\.game_id))).sorted()
+        guard !uniqueGameIDs.isEmpty else { return [] }
+        let gameRows: [GameWithCountsRow] = try await get("games_with_counts", query: [
+            "id": "in.(\(uniqueGameIDs.joined(separator: ",")))",
+            "select": "*",
+            "order": "date.desc",
+            "limit": "20",
+        ])
+        return try await hydrateGames(from: gameRows)
+    }
+
+    private func hydrateGames(from gameRows: [GameWithCountsRow]) async throws -> [Game] {
+        let gameIDs = gameRows.map(\.id).joined(separator: ",")
         guard !gameIDs.isEmpty else { return [] }
         let participants: [GameParticipantRow] = try await get("game_participants", query: [
-            "game_id": "in.(\(gameIDs))", "select": "*,profiles(display_name,avatar_url)"
+            "game_id": "in.(\(gameIDs))",
+            "select": "*,profiles(display_name,avatar_url)",
         ])
-        return gameRows.map { row in row.toGame(participants: participants.filter { $0.game_id == row.id }) }
+        return gameRows.map { row in
+            row.toGame(participants: participants.filter { $0.game_id == row.id })
+        }
     }
 
     // MARK: - Scheduled games
     func fetchScheduledGames() async throws -> [ScheduledGame] {
         let now = ISO8601DateFormatter().string(from: Date())
         let rows: [ScheduledGameRow] = try await get("scheduled_games", query: [
-            "start_time": "gte.\(now)", "select": "*,profiles(display_name),courts(name)",
-            "order": "start_time.asc", "status": "neq.cancelled"
+            "start_time": "gte.\(now)",
+            "select": "*,profiles(display_name),courts(name)",
+            "order": "start_time.asc",
+            "status": "neq.cancelled",
         ])
-        // Fetch participants
-        let ids = rows.map { $0.id }.joined(separator: ",")
+        let ids = rows.map(\.id).joined(separator: ",")
         guard !ids.isEmpty else { return rows.map { $0.toScheduledGame(participants: []) } }
         let participants: [ScheduledGameParticipantRow] = try await get("scheduled_game_participants", query: [
             "scheduled_game_id": "in.(\(ids))",
             "rsvp_status": "eq.confirmed",
-            "select": "*,profiles(display_name,avatar_url)"
+            "select": "*,profiles(display_name,avatar_url)",
         ])
-        return rows.map { row in row.toScheduledGame(participants: participants.filter { $0.scheduled_game_id == row.id }) }
+        return rows.map { row in
+            row.toScheduledGame(participants: participants.filter { $0.scheduled_game_id == row.id })
+        }
     }
 
-    func rsvpToGame(gameID: String) async throws {
+    func rsvpToGame(userID: String, gameID: String) async throws {
         struct Body: Encodable {
-            let scheduled_game_id: String; let user_id: String; let rsvp_status: String
+            let scheduled_game_id: String
+            let user_id: String
+            let rsvp_status: String
         }
-        let _: [[String: String]] = try await post("scheduled_game_participants", body: Body(
+
+        try await postNoResponse("scheduled_game_participants", body: Body(
             scheduled_game_id: gameID,
-            user_id: SupabaseConfig.currentUserID,
+            user_id: userID,
             rsvp_status: "confirmed"
         ))
     }
 
-    func createScheduledGame(courtID: String, title: String, note: String?, startTime: Date, maxPlayers: Int, isOpenInvite: Bool) async throws {
+    func createScheduledGame(
+        userID: String,
+        courtID: String,
+        title: String,
+        note: String?,
+        startTime: Date,
+        maxPlayers: Int,
+        isOpenInvite: Bool
+    ) async throws {
         struct Body: Encodable {
-            let court_id: String; let organizer_id: String; let title: String; let note: String?
-            let start_time: Date; let max_players: Int; let is_open_invite: Bool; let status: String
+            let court_id: String
+            let organizer_id: String
+            let title: String
+            let note: String?
+            let start_time: Date
+            let max_players: Int
+            let is_open_invite: Bool
+            let status: String
         }
-        let _: [[String: String]] = try await post("scheduled_games", body: Body(
-            court_id: courtID, organizer_id: SupabaseConfig.currentUserID,
-            title: title, note: note, start_time: startTime,
-            max_players: maxPlayers, is_open_invite: isOpenInvite, status: "scheduled"
+
+        struct InsertedScheduledGameRow: Decodable {
+            let id: String
+        }
+
+        let rows: [InsertedScheduledGameRow] = try await post("scheduled_games", body: Body(
+            court_id: courtID,
+            organizer_id: userID,
+            title: title,
+            note: note,
+            start_time: startTime,
+            max_players: maxPlayers,
+            is_open_invite: isOpenInvite,
+            status: "scheduled"
         ))
+        guard let gameID = rows.first?.id else { throw AppError.notFound("scheduled game") }
+
+        do {
+            try await rsvpToGame(userID: userID, gameID: gameID)
+        } catch {
+            if !isDuplicateConflict(error) {
+                throw error
+            }
+        }
+    }
+
+    func updateLocalCourt(userID: String, courtID: String) async throws {
+        struct Body: Encodable {
+            let local_court_id: String
+        }
+
+        try await patch("profiles",
+            filters: ["id": "eq.\(userID)"],
+            body: Body(local_court_id: courtID)
+        )
     }
 }
 
@@ -209,15 +339,24 @@ extension JSONDecoder {
                 "yyyy-MM-dd'T'HH:mm:ssZ",
                 "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
                 "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-                "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX"
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSSXXX",
             ]
             let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(secondsFromGMT: 0)
             for fmt in fmts {
                 f.dateFormat = fmt
-                if let d = f.date(from: s) { return d }
+                if let d = f.date(from: s) {
+                    return d
+                }
             }
-            if let d = ISO8601DateFormatter().date(from: s) { return d }
-            throw DecodingError.dataCorruptedError(in: try decoder.singleValueContainer(), debugDescription: "Cannot decode date: \(s)")
+            if let d = ISO8601DateFormatter().date(from: s) {
+                return d
+            }
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "Cannot decode date: \(s)"
+            )
         }
         return d
     }()
@@ -235,10 +374,13 @@ extension JSONEncoder {
 enum AppError: LocalizedError {
     case notFound(String)
     case server(String)
+
     var errorDescription: String? {
         switch self {
-        case .notFound(let s): return "Not found: \(s)"
-        case .server(let s): return "Server error: \(s)"
+        case .notFound(let s):
+            return "Not found: \(s)"
+        case .server(let s):
+            return "Server error: \(s)"
         }
     }
 }
@@ -276,17 +418,28 @@ struct ProfileRow: Decodable {
 
 // courts_with_stats view
 struct CourtWithStatsRow: Decodable {
-    let id: String; let name: String; let address: String
-    let latitude: Double; let longitude: Double; let sport_type: String
-    let added_by: String; let created_at: Date
-    let image_url: String?; let local_player_count: Int?; let is_confirmed: Bool?
+    let id: String
+    let name: String
+    let address: String
+    let latitude: Double
+    let longitude: Double
+    let sport_type: String
+    let added_by: String
+    let created_at: Date
+    let image_url: String?
+    let local_player_count: Int?
+    let is_confirmed: Bool?
 
     func toCourt() -> Court {
         Court(
-            id: id, name: name, address: address,
-            latitude: latitude, longitude: longitude,
+            id: id,
+            name: name,
+            address: address,
+            latitude: latitude,
+            longitude: longitude,
             sportType: SportType(rawValue: sport_type.capitalized) ?? .basketball,
-            addedBy: added_by, addedDate: created_at,
+            addedBy: added_by,
+            addedDate: created_at,
             imageURL: image_url,
             localPlayerCount: local_player_count ?? 0,
             isConfirmed: is_confirmed ?? false
@@ -296,31 +449,46 @@ struct CourtWithStatsRow: Decodable {
 
 // active_check_ins view
 struct ActiveCheckInRow: Decodable {
-    let id: String; let player_id: String; let player_name: String?
-    let player_avatar_url: String?; let court_id: String
-    let timestamp: Date?; let note: String?; let is_active: Bool?
+    let id: String
+    let player_id: String
+    let player_name: String?
+    let player_avatar_url: String?
+    let court_id: String
+    let timestamp: Date?
+    let note: String?
+    let is_active: Bool?
 
     func toCheckIn() -> CheckIn {
         CheckIn(
-            id: id, playerID: player_id,
+            id: id,
+            playerID: player_id,
             playerName: player_name ?? "Player",
             playerAvatarURL: player_avatar_url,
             courtID: court_id,
             timestamp: timestamp ?? Date(),
-            note: note, isActive: is_active ?? true
+            note: note,
+            isActive: is_active ?? true
         )
     }
 }
 
 // feed_posts_with_counts view
 struct FeedPostWithCountsRow: Decodable {
-    let id: String; let author_id: String; let author_name: String?
-    let author_avatar_url: String?; let court_id: String; let court_name: String?
-    let post_type: String; let content: String; let timestamp: Date?; let like_count: Int?
+    let id: String
+    let author_id: String
+    let author_name: String?
+    let author_avatar_url: String?
+    let court_id: String
+    let court_name: String?
+    let post_type: String
+    let content: String
+    let timestamp: Date?
+    let like_count: Int?
 
     func toFeedPost() -> FeedPost {
         FeedPost(
-            id: id, authorID: author_id,
+            id: id,
+            authorID: author_id,
             authorName: author_name ?? "Player",
             authorAvatarURL: author_avatar_url,
             courtID: court_id,
@@ -335,61 +503,129 @@ struct FeedPostWithCountsRow: Decodable {
 
 // games_with_counts view
 struct GameWithCountsRow: Decodable {
-    let id: String; let court_id: String; let court_name: String?
-    let date: Date?; let score_a: Int; let score_b: Int
-    let winner_side: String?; let like_count: Int?; let comment_count: Int?
+    let id: String
+    let court_id: String
+    let court_name: String?
+    let date: Date?
+    let score_a: Int
+    let score_b: Int
+    let winner_side: String?
+    let like_count: Int?
+    let comment_count: Int?
 
     func toGame(participants: [GameParticipantRow]) -> Game {
         let teamA = participants.filter { $0.team_side == "A" }.map {
-            PlayerRef(id: $0.user_id, displayName: $0.profiles?.display_name ?? "Player", avatarURL: $0.profiles?.avatar_url)
+            PlayerRef(
+                id: $0.user_id,
+                displayName: $0.profiles?.display_name ?? "Player",
+                avatarURL: $0.profiles?.avatar_url
+            )
         }
         let teamB = participants.filter { $0.team_side == "B" }.map {
-            PlayerRef(id: $0.user_id, displayName: $0.profiles?.display_name ?? "Player", avatarURL: $0.profiles?.avatar_url)
+            PlayerRef(
+                id: $0.user_id,
+                displayName: $0.profiles?.display_name ?? "Player",
+                avatarURL: $0.profiles?.avatar_url
+            )
         }
+
+        let winner: Game.Team
+        if winner_side == "A" {
+            winner = .teamA
+        } else if winner_side == "B" {
+            winner = .teamB
+        } else {
+            winner = score_a >= score_b ? .teamA : .teamB
+        }
+
         return Game(
-            id: id, courtID: court_id, courtName: court_name ?? "",
-            date: date ?? Date(), teamA: teamA, teamB: teamB,
-            scoreA: score_a, scoreB: score_b,
-            winnerTeam: winner_side == "A" ? .teamA : .teamB,
-            likeCount: like_count ?? 0, commentCount: comment_count ?? 0
+            id: id,
+            courtID: court_id,
+            courtName: court_name ?? "",
+            date: date ?? Date(),
+            teamA: teamA,
+            teamB: teamB,
+            scoreA: score_a,
+            scoreB: score_b,
+            winnerTeam: winner,
+            likeCount: like_count ?? 0,
+            commentCount: comment_count ?? 0
         )
     }
 }
 
 // game_participants
 struct GameParticipantRow: Decodable {
-    let game_id: String; let user_id: String; let team_side: String
+    let game_id: String
+    let user_id: String
+    let team_side: String
     let profiles: ProfileEmbed?
-    struct ProfileEmbed: Decodable { let display_name: String?; let avatar_url: String? }
+
+    struct ProfileEmbed: Decodable {
+        let display_name: String?
+        let avatar_url: String?
+    }
+}
+
+struct GameMembershipRow: Decodable {
+    let game_id: String
 }
 
 // scheduled_games
 struct ScheduledGameRow: Decodable {
-    let id: String; let court_id: String; let organizer_id: String
-    let title: String; let note: String?; let start_time: Date?
-    let max_players: Int; let is_open_invite: Bool; let status: String
-    let profiles: OrganizerEmbed?; let courts: CourtEmbed?
+    let id: String
+    let court_id: String
+    let organizer_id: String
+    let title: String
+    let note: String?
+    let start_time: Date?
+    let max_players: Int
+    let is_open_invite: Bool
+    let status: String
+    let profiles: OrganizerEmbed?
+    let courts: CourtEmbed?
 
-    struct OrganizerEmbed: Decodable { let display_name: String? }
-    struct CourtEmbed: Decodable { let name: String }
+    struct OrganizerEmbed: Decodable {
+        let display_name: String?
+    }
+
+    struct CourtEmbed: Decodable {
+        let name: String
+    }
 
     func toScheduledGame(participants: [ScheduledGameParticipantRow]) -> ScheduledGame {
         let confirmed = participants.map {
-            PlayerRef(id: $0.user_id, displayName: $0.profiles?.display_name ?? "Player", avatarURL: $0.profiles?.avatar_url)
+            PlayerRef(
+                id: $0.user_id,
+                displayName: $0.profiles?.display_name ?? "Player",
+                avatarURL: $0.profiles?.avatar_url
+            )
         }
         return ScheduledGame(
-            id: id, courtID: court_id, courtName: courts?.name ?? "",
-            organizerID: organizer_id, organizerName: profiles?.display_name ?? "Organizer",
-            date: start_time ?? Date(), maxPlayers: max_players,
-            confirmedPlayers: confirmed, isOpenInvite: is_open_invite,
-            title: title, note: note
+            id: id,
+            courtID: court_id,
+            courtName: courts?.name ?? "",
+            organizerID: organizer_id,
+            organizerName: profiles?.display_name ?? "Organizer",
+            date: start_time ?? Date(),
+            maxPlayers: max_players,
+            confirmedPlayers: confirmed,
+            isOpenInvite: is_open_invite,
+            title: title,
+            note: note
         )
     }
 }
 
 // scheduled_game_participants
 struct ScheduledGameParticipantRow: Decodable {
-    let scheduled_game_id: String; let user_id: String; let rsvp_status: String
+    let scheduled_game_id: String
+    let user_id: String
+    let rsvp_status: String
     let profiles: ProfileEmbed?
-    struct ProfileEmbed: Decodable { let display_name: String?; let avatar_url: String? }
+
+    struct ProfileEmbed: Decodable {
+        let display_name: String?
+        let avatar_url: String?
+    }
 }

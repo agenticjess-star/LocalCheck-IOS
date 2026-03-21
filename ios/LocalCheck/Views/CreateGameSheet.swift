@@ -48,7 +48,7 @@ struct CreateGameSheet: View {
                         isSubmitting = true
                         Task {
                             do {
-                                try await SupabaseService.shared.createScheduledGame(
+                                try await appState.createScheduledGame(
                                     courtID: selectedCourtID,
                                     title: title,
                                     note: note.isEmpty ? nil : note,
@@ -59,7 +59,6 @@ struct CreateGameSheet: View {
                                 onCreated()
                                 dismiss()
                             } catch {
-                                appState.errorMessage = error.localizedDescription
                                 isSubmitting = false
                             }
                         }
@@ -90,7 +89,10 @@ struct CreateGameSheet: View {
                 }
             }
             .task {
-                await appState.loadMap() // loads courts list for the picker
+                await appState.loadMap()
+                if selectedCourtID.isEmpty {
+                    selectedCourtID = appState.localCourt?.id ?? ""
+                }
             }
         }
     }

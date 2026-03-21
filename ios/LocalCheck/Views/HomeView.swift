@@ -114,7 +114,7 @@ struct HomeView: View {
                     Text("No local court set")
                         .font(.subheadline)
                         .foregroundStyle(Theme.textSecondary)
-                    Text("Set a local court in your Profile to see activity here.")
+                    Text("Set a local court from the map or Settings to see activity here.")
                         .font(.caption)
                         .foregroundStyle(Theme.textTertiary)
                         .multilineTextAlignment(.center)
