@@ -5,6 +5,29 @@ struct ContentView: View {
     @State private var selectedTab: Int = 0
 
     var body: some View {
+        Group {
+            if appState.isInitializingApp {
+                launchView
+            } else if appState.isAuthenticated {
+                authenticatedTabs
+            } else {
+                AuthView()
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task {
+            await appState.initializeApp()
+        }
+        .alert("Something went wrong", isPresented: errorAlertIsPresented) {
+            Button("OK", role: .cancel) {
+                appState.errorMessage = nil
+            }
+        } message: {
+            Text(appState.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private var authenticatedTabs: some View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house.fill", value: 0) {
                 HomeView()
@@ -23,13 +46,41 @@ struct ContentView: View {
             }
         }
         .tint(Theme.orange)
-        .preferredColorScheme(.dark)
-        .alert("Something went wrong", isPresented: errorAlertIsPresented) {
-            Button("OK", role: .cancel) {
-                appState.errorMessage = nil
+    }
+
+    private var launchView: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Theme.surface, Theme.surfaceElevated, Theme.orangeDark.opacity(0.65)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                ZStack {
+                    Circle()
+                        .fill(Theme.orange.opacity(0.18))
+                        .frame(width: 92, height: 92)
+                    Image(systemName: "basketball.fill")
+                        .font(.system(size: 38))
+                        .foregroundStyle(Theme.orange)
+                }
+
+                VStack(spacing: 6) {
+                    Text("LocalCheck")
+                        .font(.system(size: 30, weight: .black, design: .rounded))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Loading your court.")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+
+                ProgressView()
+                    .tint(Theme.orange)
+                    .scaleEffect(1.15)
             }
-        } message: {
-            Text(appState.errorMessage ?? "Unknown error")
+            .padding(32)
         }
     }
 

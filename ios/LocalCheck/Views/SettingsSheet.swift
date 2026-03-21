@@ -7,17 +7,14 @@ struct SettingsSheet: View {
     @State private var notificationsEnabled: Bool = true
     @State private var checkInReminders: Bool = true
     @State private var gameAlerts: Bool = true
-    @State private var selectedUserID: String = ""
-    @State private var selectedCourtID: String = ""
-    @State private var isSwitchingUser: Bool = false
-    @State private var isSavingCourt: Bool = false
+    @State private var isSigningOut: Bool = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Account") {
                     if let player = appState.currentPlayer {
-                        LabeledContent("Active Player") {
+                        LabeledContent("Player") {
                             VStack(alignment: .trailing, spacing: 2) {
                                 Text(player.displayName)
                                 Text("@\(player.username)")
@@ -25,6 +22,11 @@ struct SettingsSheet: View {
                                     .foregroundStyle(Theme.textSecondary)
                             }
                         }
+                    }
+
+                    LabeledContent("Email") {
+                        Text(appState.currentUserEmail ?? "Unavailable")
+                            .foregroundStyle(Theme.textSecondary)
                     }
 
                     LabeledContent("Local Court") {
@@ -44,67 +46,6 @@ struct SettingsSheet: View {
                 .foregroundStyle(Theme.textPrimary)
                 .tint(Theme.orange)
 
-                Section("Development") {
-                    Picker("Active Player", selection: $selectedUserID) {
-                        ForEach(appState.players) { player in
-                            Text("\(player.displayName) (@\(player.username))")
-                                .tag(player.id)
-                        }
-                    }
-                    .foregroundStyle(Theme.textPrimary)
-
-                    Button {
-                        isSwitchingUser = true
-                        Task {
-                            await appState.switchCurrentUser(to: selectedUserID)
-                            selectedCourtID = appState.localCourt?.id ?? appState.currentPlayer?.localCourtID ?? ""
-                            isSwitchingUser = false
-                        }
-                    } label: {
-                        HStack {
-                            if isSwitchingUser {
-                                ProgressView()
-                            }
-                            Text(isSwitchingUser ? "Switching..." : "Use Selected Player")
-                        }
-                    }
-                    .disabled(
-                        selectedUserID.isEmpty ||
-                        selectedUserID == appState.currentUserID ||
-                        isSwitchingUser
-                    )
-
-                    Picker("Local Court", selection: $selectedCourtID) {
-                        Text("Select a Court").tag("")
-                        ForEach(appState.courts) { court in
-                            Text(court.name).tag(court.id)
-                        }
-                    }
-                    .foregroundStyle(Theme.textPrimary)
-
-                    Button {
-                        isSavingCourt = true
-                        Task {
-                            await appState.updateLocalCourt(courtID: selectedCourtID)
-                            isSavingCourt = false
-                        }
-                    } label: {
-                        HStack {
-                            if isSavingCourt {
-                                ProgressView()
-                            }
-                            Text(isSavingCourt ? "Saving..." : "Save Local Court")
-                        }
-                    }
-                    .disabled(
-                        selectedCourtID.isEmpty ||
-                        selectedCourtID == (appState.localCourt?.id ?? appState.currentPlayer?.localCourtID ?? "") ||
-                        isSavingCourt
-                    )
-                }
-                .listRowBackground(Theme.surfaceCard)
-                .foregroundStyle(Theme.textPrimary)
-
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -113,13 +54,32 @@ struct SettingsSheet: View {
                         Text("1.0.0")
                             .foregroundStyle(Theme.textSecondary)
                     }
+                    Text("Email/password is enabled for test accounts. Apple is the intended primary sign-in path for launch.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
                 }
                 .listRowBackground(Theme.surfaceCard)
 
                 Section {
-                    Text("Supabase Auth and Sign in with Apple are still pending. These controls let you test the live backend with real profile data in the meantime.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
+                    Button(role: .destructive) {
+                        isSigningOut = true
+                        Task {
+                            await appState.signOut()
+                            isSigningOut = false
+                            dismiss()
+                        }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isSigningOut {
+                                ProgressView()
+                            } else {
+                                Text("Sign Out")
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(isSigningOut)
                 }
                 .listRowBackground(Theme.surfaceCard)
             }
@@ -135,16 +95,6 @@ struct SettingsSheet: View {
                     }
                     .tint(Theme.orange)
                 }
-            }
-            .task {
-                if appState.players.isEmpty {
-                    await appState.loadRankings()
-                }
-                if appState.courts.isEmpty {
-                    await appState.loadMap()
-                }
-                selectedUserID = appState.currentUserID
-                selectedCourtID = appState.localCourt?.id ?? appState.currentPlayer?.localCourtID ?? ""
             }
         }
     }

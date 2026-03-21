@@ -8,37 +8,30 @@
 import Foundation
 
 // MARK: - Config
-// IMPORTANT: Replace the development user flow with Supabase Auth for production.
-// Until then, the app can persist a live profile selection for local development.
 
 enum SupabaseConfig {
     static let url = "https://jzclwnzcektqhgkkdeje.supabase.co"
     static let anonKey = "sb_publishable_oL6OFCLyIPWUuxv27tqZUQ_1i7WYcHS"
-    static let currentUserDefaultsKey = "localcheck.currentUserID"
-    static let developmentUserID = "7d9c399c-9672-4277-9aa3-5acebab78e4e"
-
-    static var initialCurrentUserID: String {
-        if let storedID = UserDefaults.standard.string(forKey: currentUserDefaultsKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !storedID.isEmpty {
-            return storedID
-        }
-        return developmentUserID
-    }
+    static let sessionKeychainAccount = "supabase.auth.session"
 }
 
 // MARK: - SupabaseService
 actor SupabaseService {
     static let shared = SupabaseService()
     private let base = URL(string: SupabaseConfig.url)!
+    private var accessToken: String?
 
     private func headers(prefer: String = "return=representation") -> [String: String] {
         [
             "apikey": SupabaseConfig.anonKey,
-            "Authorization": "Bearer \(SupabaseConfig.anonKey)",
+            "Authorization": "Bearer \(accessToken ?? SupabaseConfig.anonKey)",
             "Content-Type": "application/json",
             "Prefer": prefer,
         ]
+    }
+
+    func setAccessToken(_ token: String?) {
+        accessToken = token
     }
 
     private func responseData(for request: URLRequest) async throws -> Data {
@@ -62,9 +55,12 @@ actor SupabaseService {
     private func post<T: Decodable>(
         _ table: String,
         body: some Encodable,
-        prefer: String = "return=representation"
+        prefer: String = "return=representation",
+        query: [String: String] = [:]
     ) async throws -> T {
-        var req = URLRequest(url: base.appendingPathComponent("/rest/v1/\(table)"))
+        var comps = URLComponents(url: base.appendingPathComponent("/rest/v1/\(table)"), resolvingAgainstBaseURL: true)!
+        comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        var req = URLRequest(url: comps.url!)
         req.httpMethod = "POST"
         headers(prefer: prefer).forEach { req.setValue($1, forHTTPHeaderField: $0) }
         req.httpBody = try JSONEncoder.supabase.encode(body)
@@ -98,12 +94,7 @@ actor SupabaseService {
 
     // MARK: - Profiles
     func fetchCurrentPlayer(userID: String) async throws -> Player {
-        let rows: [ProfileRow] = try await get("profiles", query: [
-            "id": "eq.\(userID)",
-            "select": "*",
-        ])
-        guard let row = rows.first else { throw AppError.notFound("profile") }
-        return row.toPlayer()
+        try await fetchProfileRow(userID: userID).toPlayer()
     }
 
     func fetchPlayers(localCourtID: String? = nil) async throws -> [Player] {
@@ -113,6 +104,88 @@ actor SupabaseService {
         }
         let rows: [ProfileRow] = try await get("profiles", query: q)
         return rows.map { $0.toPlayer() }
+    }
+
+    private func fetchProfileRow(userID: String) async throws -> ProfileRow {
+        let rows: [ProfileRow] = try await get("profiles", query: [
+            "id": "eq.\(userID)",
+            "select": "*",
+        ])
+        guard let row = rows.first else { throw AppError.notFound("profile") }
+        return row
+    }
+
+    func ensureProfile(
+        for user: AuthUser,
+        preferredDisplayName: String? = nil,
+        preferredUsername: String? = nil
+    ) async throws -> Player {
+        do {
+            let existingRow = try await fetchProfileRow(userID: user.id)
+            let displayName = existingRow.display_name?.trimmedNonEmpty ?? preferredDisplayName?.trimmedNonEmpty ?? user.displayNameCandidate
+            let username = existingRow.username?.trimmedNonEmpty ?? preferredUsername?.trimmedNonEmpty ?? user.usernameCandidate
+
+            if displayName != existingRow.display_name || username != existingRow.username {
+                struct Body: Encodable {
+                    let display_name: String?
+                    let username: String?
+                }
+
+                try await patch("profiles",
+                    filters: ["id": "eq.\(user.id)"],
+                    body: Body(display_name: displayName, username: username)
+                )
+                return try await fetchCurrentPlayer(userID: user.id)
+            }
+
+            return existingRow.toPlayer()
+        } catch let error as AppError {
+            if case .notFound(_) = error {
+                return try await createProfile(
+                    for: user,
+                    preferredDisplayName: preferredDisplayName,
+                    preferredUsername: preferredUsername
+                )
+            }
+            throw error
+        }
+    }
+
+    private func createProfile(
+        for user: AuthUser,
+        preferredDisplayName: String?,
+        preferredUsername: String?
+    ) async throws -> Player {
+        struct Body: Encodable {
+            let id: String
+            let display_name: String
+            let username: String
+        }
+
+        let displayName = preferredDisplayName?.trimmedNonEmpty ?? user.displayNameCandidate ?? "Player"
+        let baseUsername = preferredUsername?.trimmedNonEmpty ?? user.usernameCandidate ?? "player"
+        let usernameCandidates = candidateUsernames(from: baseUsername, userID: user.id)
+
+        for username in usernameCandidates {
+            do {
+                let rows: [ProfileRow] = try await post("profiles",
+                    body: [Body(id: user.id, display_name: displayName, username: username)],
+                    prefer: "resolution=merge-duplicates,return=representation",
+                    query: ["on_conflict": "id"]
+                )
+                if let row = rows.first {
+                    return row.toPlayer()
+                }
+                return try await fetchCurrentPlayer(userID: user.id)
+            } catch {
+                if isDuplicateConflict(error) {
+                    continue
+                }
+                throw error
+            }
+        }
+
+        throw AppError.server("Could not create a unique username for this profile.")
     }
 
     // MARK: - Courts (use the view which includes stats)
@@ -382,6 +455,41 @@ enum AppError: LocalizedError {
         case .server(let s):
             return "Server error: \(s)"
         }
+    }
+}
+
+private func candidateUsernames(from rawValue: String, userID: String) -> [String] {
+    let base = rawValue.sanitizedUsername ?? "player\(userID.prefix(6))"
+    let fallbackSeed = userID.replacingOccurrences(of: "-", with: "")
+    let suffix = String(fallbackSeed.prefix(4))
+    return [
+        base,
+        "\(base)_\(suffix)",
+        "\(base)\(suffix)",
+        "player\(suffix)",
+    ]
+}
+
+private extension String {
+    var trimmedNonEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    var sanitizedUsername: String? {
+        let lowered = lowercased()
+        let filtered = lowered.unicodeScalars.reduce(into: "") { partialResult, scalar in
+            if CharacterSet.alphanumerics.contains(scalar) {
+                partialResult.unicodeScalars.append(scalar)
+            } else {
+                partialResult.append("_")
+            }
+        }
+        let collapsed = filtered
+            .replacingOccurrences(of: "__+", with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let truncated = String(collapsed.prefix(24))
+        return truncated.trimmedNonEmpty
     }
 }
 
