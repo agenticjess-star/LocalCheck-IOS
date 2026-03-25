@@ -191,6 +191,7 @@ actor SupabaseService {
     // MARK: - Courts (use the view which includes stats)
     func fetchCourts() async throws -> [Court] {
         let rows: [CourtWithStatsRow] = try await get("courts_with_stats", query: [
+            "is_archived": "eq.false",
             "select": "*",
             "order": "local_player_count.desc",
         ])
@@ -201,9 +202,48 @@ actor SupabaseService {
         guard let id, !id.isEmpty else { return nil }
         let courts: [CourtWithStatsRow] = try await get("courts_with_stats", query: [
             "id": "eq.\(id)",
+            "is_archived": "eq.false",
             "select": "*",
         ])
         return courts.first?.toCourt()
+    }
+
+    func createCourt(
+        userID: String,
+        name: String,
+        address: String,
+        latitude: Double,
+        longitude: Double,
+        sportType: SportType
+    ) async throws -> Court {
+        struct Body: Encodable {
+            let name: String
+            let address: String
+            let latitude: Double
+            let longitude: Double
+            let sport_type: String
+            let added_by: String
+        }
+
+        struct InsertedCourtRow: Decodable {
+            let id: String
+        }
+
+        let rows: [InsertedCourtRow] = try await post("courts", body: Body(
+            name: name,
+            address: address,
+            latitude: latitude,
+            longitude: longitude,
+            sport_type: sportType.rawValue.lowercased(),
+            added_by: userID
+        ))
+
+        guard let id = rows.first?.id,
+              let court = try await fetchCourt(id: id) else {
+            throw AppError.notFound("court")
+        }
+
+        return court
     }
 
     // MARK: - Check-ins (use the active_check_ins view)
@@ -303,32 +343,69 @@ actor SupabaseService {
         guard !gameIDs.isEmpty else { return [] }
         let participants: [GameParticipantRow] = try await get("game_participants", query: [
             "game_id": "in.(\(gameIDs))",
-            "select": "*,profiles(display_name,avatar_url)",
+            "select": "*",
+            "order": "display_order.asc",
         ])
+        let profilesByID = try await fetchProfileSummaries(userIDs: participants.map(\.user_id))
         return gameRows.map { row in
-            row.toGame(participants: participants.filter { $0.game_id == row.id })
+            row.toGame(
+                participants: participants.filter { $0.game_id == row.id },
+                profilesByID: profilesByID
+            )
         }
     }
 
     // MARK: - Scheduled games
-    func fetchScheduledGames() async throws -> [ScheduledGame] {
+    func fetchScheduledGames(courtID: String? = nil) async throws -> [ScheduledGame] {
         let now = ISO8601DateFormatter().string(from: Date())
-        let rows: [ScheduledGameRow] = try await get("scheduled_games", query: [
+        var query: [String: String] = [
             "start_time": "gte.\(now)",
-            "select": "*,profiles(display_name),courts(name)",
+            "select": "*",
             "order": "start_time.asc",
             "status": "neq.cancelled",
-        ])
+        ]
+        if let courtID {
+            query["court_id"] = "eq.\(courtID)"
+        }
+        let rows: [ScheduledGameRow] = try await get("scheduled_games", query: query)
+        guard !rows.isEmpty else { return [] }
+        let courtNamesByID = try await fetchCourtSummaries(courtIDs: rows.map(\.court_id))
+        let organizerProfilesByID = try await fetchProfileSummaries(userIDs: rows.map(\.organizer_id))
+
         let ids = rows.map(\.id).joined(separator: ",")
-        guard !ids.isEmpty else { return rows.map { $0.toScheduledGame(participants: []) } }
         let participants: [ScheduledGameParticipantRow] = try await get("scheduled_game_participants", query: [
             "scheduled_game_id": "in.(\(ids))",
-            "rsvp_status": "eq.confirmed",
-            "select": "*,profiles(display_name,avatar_url)",
+            "select": "*",
         ])
+        let participantProfilesByID = try await fetchProfileSummaries(userIDs: participants.map(\.user_id))
         return rows.map { row in
-            row.toScheduledGame(participants: participants.filter { $0.scheduled_game_id == row.id })
+            row.toScheduledGame(
+                participants: participants.filter { $0.scheduled_game_id == row.id && $0.countsTowardAttendance },
+                organizer: organizerProfilesByID[row.organizer_id],
+                court: courtNamesByID[row.court_id],
+                participantProfilesByID: participantProfilesByID
+            )
         }
+    }
+
+    private func fetchProfileSummaries(userIDs: [String]) async throws -> [String: ProfileSummaryRow] {
+        let uniqueIDs = Array(Set(userIDs)).sorted()
+        guard !uniqueIDs.isEmpty else { return [:] }
+        let rows: [ProfileSummaryRow] = try await get("profiles", query: [
+            "id": "in.(\(uniqueIDs.joined(separator: ",")))",
+            "select": "id,display_name,avatar_url",
+        ])
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+    }
+
+    private func fetchCourtSummaries(courtIDs: [String]) async throws -> [String: CourtSummaryRow] {
+        let uniqueIDs = Array(Set(courtIDs)).sorted()
+        guard !uniqueIDs.isEmpty else { return [:] }
+        let rows: [CourtSummaryRow] = try await get("courts", query: [
+            "id": "in.(\(uniqueIDs.joined(separator: ",")))",
+            "select": "id,name",
+        ])
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
     }
 
     func rsvpToGame(userID: String, gameID: String) async throws {
@@ -338,11 +415,25 @@ actor SupabaseService {
             let rsvp_status: String
         }
 
-        try await postNoResponse("scheduled_game_participants", body: Body(
-            scheduled_game_id: gameID,
-            user_id: userID,
-            rsvp_status: "confirmed"
-        ))
+        do {
+            try await postNoResponse("scheduled_game_participants", body: Body(
+                scheduled_game_id: gameID,
+                user_id: userID,
+                rsvp_status: "confirmed"
+            ))
+        } catch {
+            guard let appError = error as? AppError,
+                  case let .server(message) = appError,
+                  message.localizedCaseInsensitiveContains("rsvp_status") else {
+                throw error
+            }
+
+            try await postNoResponse("scheduled_game_participants", body: Body(
+                scheduled_game_id: gameID,
+                user_id: userID,
+                rsvp_status: "going"
+            ))
+        }
     }
 
     func createScheduledGame(
@@ -555,10 +646,22 @@ struct CourtWithStatsRow: Decodable {
     }
 }
 
+struct CourtSummaryRow: Decodable {
+    let id: String
+    let name: String
+}
+
+struct ProfileSummaryRow: Decodable {
+    let id: String
+    let display_name: String?
+    let avatar_url: String?
+}
+
 // active_check_ins view
 struct ActiveCheckInRow: Decodable {
     let id: String
-    let player_id: String
+    let player_id: String?
+    let user_id: String?
     let player_name: String?
     let player_avatar_url: String?
     let court_id: String
@@ -569,7 +672,7 @@ struct ActiveCheckInRow: Decodable {
     func toCheckIn() -> CheckIn {
         CheckIn(
             id: id,
-            playerID: player_id,
+            playerID: player_id ?? user_id ?? id,
             playerName: player_name ?? "Player",
             playerAvatarURL: player_avatar_url,
             courtID: court_id,
@@ -621,19 +724,21 @@ struct GameWithCountsRow: Decodable {
     let like_count: Int?
     let comment_count: Int?
 
-    func toGame(participants: [GameParticipantRow]) -> Game {
+    func toGame(participants: [GameParticipantRow], profilesByID: [String: ProfileSummaryRow]) -> Game {
         let teamA = participants.filter { $0.team_side == "A" }.map {
+            let profile = profilesByID[$0.user_id]
             PlayerRef(
                 id: $0.user_id,
-                displayName: $0.profiles?.display_name ?? "Player",
-                avatarURL: $0.profiles?.avatar_url
+                displayName: profile?.display_name ?? "Player",
+                avatarURL: profile?.avatar_url
             )
         }
         let teamB = participants.filter { $0.team_side == "B" }.map {
+            let profile = profilesByID[$0.user_id]
             PlayerRef(
                 id: $0.user_id,
-                displayName: $0.profiles?.display_name ?? "Player",
-                avatarURL: $0.profiles?.avatar_url
+                displayName: profile?.display_name ?? "Player",
+                avatarURL: profile?.avatar_url
             )
         }
 
@@ -667,12 +772,7 @@ struct GameParticipantRow: Decodable {
     let game_id: String
     let user_id: String
     let team_side: String
-    let profiles: ProfileEmbed?
-
-    struct ProfileEmbed: Decodable {
-        let display_name: String?
-        let avatar_url: String?
-    }
+    let display_order: Int?
 }
 
 struct GameMembershipRow: Decodable {
@@ -690,31 +790,27 @@ struct ScheduledGameRow: Decodable {
     let max_players: Int
     let is_open_invite: Bool
     let status: String
-    let profiles: OrganizerEmbed?
-    let courts: CourtEmbed?
 
-    struct OrganizerEmbed: Decodable {
-        let display_name: String?
-    }
-
-    struct CourtEmbed: Decodable {
-        let name: String
-    }
-
-    func toScheduledGame(participants: [ScheduledGameParticipantRow]) -> ScheduledGame {
+    func toScheduledGame(
+        participants: [ScheduledGameParticipantRow],
+        organizer: ProfileSummaryRow?,
+        court: CourtSummaryRow?,
+        participantProfilesByID: [String: ProfileSummaryRow]
+    ) -> ScheduledGame {
         let confirmed = participants.map {
+            let profile = participantProfilesByID[$0.user_id]
             PlayerRef(
                 id: $0.user_id,
-                displayName: $0.profiles?.display_name ?? "Player",
-                avatarURL: $0.profiles?.avatar_url
+                displayName: profile?.display_name ?? "Player",
+                avatarURL: profile?.avatar_url
             )
         }
         return ScheduledGame(
             id: id,
             courtID: court_id,
-            courtName: courts?.name ?? "",
+            courtName: court?.name ?? "",
             organizerID: organizer_id,
-            organizerName: profiles?.display_name ?? "Organizer",
+            organizerName: organizer?.display_name ?? "Organizer",
             date: start_time ?? Date(),
             maxPlayers: max_players,
             confirmedPlayers: confirmed,
@@ -730,10 +826,9 @@ struct ScheduledGameParticipantRow: Decodable {
     let scheduled_game_id: String
     let user_id: String
     let rsvp_status: String
-    let profiles: ProfileEmbed?
 
-    struct ProfileEmbed: Decodable {
-        let display_name: String?
-        let avatar_url: String?
+    var countsTowardAttendance: Bool {
+        let normalized = rsvp_status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "confirmed" || normalized == "going"
     }
 }

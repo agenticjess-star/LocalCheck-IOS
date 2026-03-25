@@ -21,6 +21,7 @@ final class AppState {
     var activeCheckIns: [CheckIn] = []
     var courtFeed: [FeedPost] = []
     var recentGames: [Game] = []
+    var activityGames: [Game] = []
     var scheduledGames: [ScheduledGame] = []
     var players: [Player] = []
     var topOpponents: [(Player, Int)] = []
@@ -38,6 +39,10 @@ final class AppState {
 
     var isAuthenticated: Bool {
         authSession != nil
+    }
+
+    var requiresLocalCourtSelection: Bool {
+        isAuthenticated && currentPlayer != nil && localCourt == nil
     }
 
     var currentUserEmail: String? {
@@ -164,6 +169,7 @@ final class AppState {
         activeCheckIns = []
         courtFeed = []
         recentGames = []
+        activityGames = []
         scheduledGames = []
         players = []
         topOpponents = []
@@ -271,7 +277,12 @@ final class AppState {
         defer { isLoadingRankings = false }
 
         do {
-            players = try await service.fetchPlayers()
+            let (player, _) = try await refreshCurrentPlayerContext()
+            if let courtID = player.localCourtID {
+                players = try await service.fetchPlayers(localCourtID: courtID)
+            } else {
+                players = []
+            }
         } catch {
             setError(error)
         }
@@ -284,7 +295,12 @@ final class AppState {
         defer { isLoadingSchedule = false }
 
         do {
-            scheduledGames = try await service.fetchScheduledGames()
+            let (_, court) = try await refreshCurrentPlayerContext()
+            if let courtID = court?.id {
+                scheduledGames = try await service.fetchScheduledGames(courtID: courtID)
+            } else {
+                scheduledGames = []
+            }
         } catch {
             setError(error)
         }
@@ -350,7 +366,12 @@ final class AppState {
 
         do {
             try await service.rsvpToGame(userID: currentUserID, gameID: gameID)
-            scheduledGames = try await service.fetchScheduledGames()
+            let (_, court) = try await refreshCurrentPlayerContext()
+            if let courtID = court?.id {
+                scheduledGames = try await service.fetchScheduledGames(courtID: courtID)
+            } else {
+                scheduledGames = []
+            }
         } catch {
             setError(error)
         }
@@ -376,7 +397,12 @@ final class AppState {
                 maxPlayers: maxPlayers,
                 isOpenInvite: isOpenInvite
             )
-            scheduledGames = try await service.fetchScheduledGames()
+            let (_, currentCourt) = try await refreshCurrentPlayerContext()
+            if let currentCourtID = currentCourt?.id {
+                scheduledGames = try await service.fetchScheduledGames(courtID: currentCourtID)
+            } else {
+                scheduledGames = []
+            }
         } catch {
             setError(error)
             throw error
@@ -399,6 +425,58 @@ final class AppState {
                 activeCheckIns = []
                 courtFeed = []
                 isCheckedIn = false
+            }
+        } catch {
+            setError(error)
+        }
+    }
+
+    func createCourt(
+        name: String,
+        address: String,
+        latitude: Double,
+        longitude: Double,
+        sportType: SportType
+    ) async throws -> Court {
+        guard isAuthenticated else {
+            throw AuthError.unauthorized("Please sign in to continue.")
+        }
+
+        do {
+            let court = try await service.createCourt(
+                userID: currentUserID,
+                name: name,
+                address: address,
+                latitude: latitude,
+                longitude: longitude,
+                sportType: sportType
+            )
+
+            try await service.updateLocalCourt(userID: currentUserID, courtID: court.id)
+            currentPlayer = try await service.fetchCurrentPlayer(userID: currentUserID)
+            localCourt = try await service.fetchCourt(id: court.id) ?? court
+            courts = try await service.fetchCourts()
+            activeCheckIns = []
+            courtFeed = []
+            isCheckedIn = false
+            await loadHome()
+            await loadSchedule()
+            return localCourt ?? court
+        } catch {
+            setError(error)
+            throw error
+        }
+    }
+
+    func loadActivity() async {
+        guard isAuthenticated else { return }
+
+        do {
+            let (_, court) = try await refreshCurrentPlayerContext()
+            if let courtID = court?.id {
+                activityGames = try await service.fetchRecentGames(courtID: courtID)
+            } else {
+                activityGames = []
             }
         } catch {
             setError(error)
