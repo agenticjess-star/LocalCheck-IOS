@@ -54,7 +54,7 @@ struct SettingsSheet: View {
                         Text("1.0.0")
                             .foregroundStyle(Theme.textSecondary)
                     }
-                    Text("Email/password is enabled for test accounts. Apple is the intended primary sign-in path for launch.")
+                    Text("Email and password is the active preview path. Apple sign-in can be switched on closer to launch.")
                         .font(.caption)
                         .foregroundStyle(Theme.textSecondary)
                 }

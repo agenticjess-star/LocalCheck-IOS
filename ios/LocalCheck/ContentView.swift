@@ -8,6 +8,8 @@ struct ContentView: View {
         Group {
             if appState.isInitializingApp {
                 launchView
+            } else if appState.requiresLocalCourtSelection {
+                CourtMapView(onboardingMode: true)
             } else if appState.isAuthenticated {
                 authenticatedTabs
             } else {

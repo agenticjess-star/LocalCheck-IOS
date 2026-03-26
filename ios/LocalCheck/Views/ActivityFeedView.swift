@@ -4,7 +4,7 @@ struct ActivityFeedView: View {
     @Environment(AppState.self) private var appState
     @State private var appeared: Bool = false
 
-    private var games: [Game] { appState.recentGames }
+    private var games: [Game] { appState.activityGames }
 
     var body: some View {
         NavigationStack {
@@ -39,8 +39,7 @@ struct ActivityFeedView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .task {
-                do { appState.recentGames = try await SupabaseService.shared.fetchRecentGames() }
-                catch { appState.errorMessage = error.localizedDescription }
+                await appState.loadActivity()
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.8).delay(0.1)) { appeared = true }
             }
         }

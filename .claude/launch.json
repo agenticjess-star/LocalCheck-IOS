@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "LocalCheck iOS Simulator",
+      "runtimeExecutable": "xcodebuild",
+      "runtimeArgs": [
+        "-project", "ios/LocalCheck.xcodeproj",
+        "-scheme", "LocalCheck",
+        "-destination", "platform=iOS Simulator,name=iPhone 16 Pro",
+        "build"
+      ]
+    }
+  ]
+}

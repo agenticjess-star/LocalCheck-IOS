@@ -114,10 +114,20 @@ struct HomeView: View {
                     Text("No local court set")
                         .font(.subheadline)
                         .foregroundStyle(Theme.textSecondary)
-                    Text("Set a local court from the map or Settings to see activity here.")
+                    Text("Set a local court from the map to see activity here.")
                         .font(.caption)
                         .foregroundStyle(Theme.textTertiary)
                         .multilineTextAlignment(.center)
+                    Button {
+                        showMap = true
+                    } label: {
+                        Text("Choose Your Court")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(Theme.orange, in: .rect(cornerRadius: 12))
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(30)

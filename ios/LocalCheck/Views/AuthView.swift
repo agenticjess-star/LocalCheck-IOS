@@ -1,4 +1,3 @@
-import AuthenticationServices
 import SwiftUI
 import UIKit
 
@@ -8,7 +7,6 @@ struct AuthView: View {
     @State private var email: String = ""
     @State private var password: String = ""
     @State private var displayName: String = ""
-    @State private var currentNonce: String = ""
 
     private enum Mode: String, CaseIterable, Identifiable {
         case signIn = "Sign In"
@@ -153,29 +151,33 @@ struct AuthView: View {
                     .frame(height: 1)
             }
 
-            SignInWithAppleButton(.continue) { request in
-                let nonce = AuthNonce.randomString()
-                currentNonce = nonce
-                request.requestedScopes = [.fullName, .email]
-                request.nonce = AuthNonce.sha256(nonce)
-            } onCompletion: { result in
-                switch result {
-                case .success(let authorization):
-                    Task {
-                        await appState.signInWithApple(authorization: authorization, rawNonce: currentNonce)
-                    }
-                case .failure(let error):
-                    if let appleError = error as? ASAuthorizationError, appleError.code == .canceled {
-                        return
-                    }
-                    appState.errorMessage = error.localizedDescription
+            Button {
+                appState.authNotice = "Apple sign-in will be enabled closer to launch. Use email and password for preview builds on your phone."
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "apple.logo")
+                        .font(.headline)
+                    Text("Continue with Apple")
+                        .font(.headline)
+                    Spacer()
+                    Text("Soon")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.surfaceBorder, in: Capsule())
+                }
+                .foregroundStyle(Theme.textPrimary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .padding(.horizontal, 16)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
                 }
             }
-            .signInWithAppleButtonStyle(.white)
-            .frame(height: 52)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-            Text(mode == .signUp ? "Use email for test accounts now. Apple sign-in is here for the real user path." : "Use the same Supabase account across phone and simulator once the runtime is installed.")
+            Text(mode == .signUp ? "Email and password is the active preview path. Apple sign-in stays visible here so the launch direction is clear." : "Use the same email account across phone and simulator while we finish the rest of the product flow.")
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondary)
         }
