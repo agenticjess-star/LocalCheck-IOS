@@ -12,7 +12,7 @@ struct HomeView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if appState.isLoadingHome && appState.localCourt == nil {
-                        ProgressView("Loading your court...")
+                        ProgressView("Loading your court…")
                             .padding(.top, 100)
                     } else {
                         courtHeader
@@ -70,72 +70,74 @@ struct HomeView: View {
     }
 
     // MARK: - Court header
+
     private var courtHeader: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             if let court = appState.localCourt {
                 VStack(spacing: 8) {
                     HStack(spacing: 8) {
                         Image(systemName: court.sportType.icon)
-                            .font(.title2)
+                            .font(.title3)
                             .foregroundStyle(Theme.orange)
                         Text(court.name)
-                            .font(.title2.bold())
+                            .font(.title3.bold())
                             .foregroundStyle(Theme.textPrimary)
                     }
                     Text(court.address)
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(Theme.textSecondary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 20)
-                .background(Theme.surfaceElevated)
-                .clipShape(.rect(cornerRadius: 16))
+                .background(Theme.surfaceElevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 // Check-in button
                 Button {
                     showCheckIn = true
                 } label: {
-                    HStack {
+                    HStack(spacing: 8) {
                         Image(systemName: appState.isCheckedIn ? "checkmark.circle.fill" : "mappin.and.ellipse")
-                        Text(appState.isCheckedIn ? "Checked In ✓" : "Check In")
-                            .font(.headline)
+                        Text(appState.isCheckedIn ? "Checked In" : "Check In")
+                            .font(.body.weight(.semibold))
                     }
                     .foregroundStyle(appState.isCheckedIn ? Theme.green : .white)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(appState.isCheckedIn ? Theme.green.opacity(0.15) : Theme.orange, in: .rect(cornerRadius: 12))
+                    .frame(height: Theme.buttonHeight)
+                    .background(
+                        appState.isCheckedIn ? Theme.green.opacity(0.15) : Theme.orange,
+                        in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                    )
                 }
                 .sensoryFeedback(.impact(weight: .medium), trigger: appState.isCheckedIn)
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     Image(systemName: "mappin.slash")
-                        .font(.system(size: 40))
+                        .font(.system(size: 36))
                         .foregroundStyle(Theme.textTertiary)
                     Text("No local court set")
-                        .font(.subheadline)
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.textSecondary)
-                    Text("Set a local court from the map to see activity here.")
-                        .font(.caption)
+                    Text("Pick a court from the map to see activity here.")
+                        .font(.footnote)
                         .foregroundStyle(Theme.textTertiary)
                         .multilineTextAlignment(.center)
                     Button {
                         showMap = true
                     } label: {
                         Text("Choose Your Court")
-                            .font(.subheadline.bold())
+                            .font(.body.weight(.semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(Theme.orange, in: .rect(cornerRadius: 12))
+                            .frame(height: Theme.buttonHeight)
+                            .background(Theme.orange, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .padding(30)
-                .background(Theme.surfaceElevated)
-                .clipShape(.rect(cornerRadius: 16))
+                .padding(28)
+                .background(Theme.surfaceElevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Theme.screenPadding)
         .padding(.top, 12)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 10)
@@ -143,6 +145,7 @@ struct HomeView: View {
     }
 
     // MARK: - Presence
+
     private var presenceSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -151,19 +154,19 @@ struct HomeView: View {
                     .foregroundStyle(Theme.textPrimary)
                 Spacer()
                 Text("\(appState.activeCheckIns.count) here now")
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(Theme.orange)
             }
 
             if appState.activeCheckIns.isEmpty {
                 Text("No one is checked in right now.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(Theme.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
             } else {
                 ScrollView(.horizontal) {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 12) {
                         ForEach(appState.activeCheckIns) { checkIn in
                             VStack(spacing: 4) {
                                 AvatarView(name: checkIn.playerName, size: 44)
@@ -178,14 +181,15 @@ struct HomeView: View {
                 .scrollIndicators(.hidden)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 24)
+        .padding(.horizontal, Theme.screenPadding)
+        .padding(.top, 28)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 10)
         .animation(.spring(response: 0.5).delay(0.15), value: appeared)
     }
 
     // MARK: - Feed
+
     private var feedSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -199,7 +203,7 @@ struct HomeView: View {
 
             if appState.courtFeed.isEmpty {
                 Text("No posts yet. Be the first to post!")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(Theme.textTertiary)
                     .padding(.vertical, 8)
             } else {
@@ -208,8 +212,8 @@ struct HomeView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 24)
+        .padding(.horizontal, Theme.screenPadding)
+        .padding(.top, 28)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : 10)
         .animation(.spring(response: 0.5).delay(0.25), value: appeared)
