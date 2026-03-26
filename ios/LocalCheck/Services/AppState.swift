@@ -37,12 +37,14 @@ final class AppState {
     var isLoadingMap: Bool = false
     var errorMessage: String?
 
+    var skippedCourtOnboarding: Bool = false
+
     var isAuthenticated: Bool {
         authSession != nil
     }
 
     var requiresLocalCourtSelection: Bool {
-        isAuthenticated && currentPlayer != nil && localCourt == nil
+        isAuthenticated && currentPlayer != nil && localCourt == nil && !skippedCourtOnboarding
     }
 
     var currentUserEmail: String? {
@@ -174,6 +176,7 @@ final class AppState {
         players = []
         topOpponents = []
         isCheckedIn = false
+        skippedCourtOnboarding = false
         authNotice = nil
     }
 
@@ -304,6 +307,10 @@ final class AppState {
         } catch {
             setError(error)
         }
+    }
+
+    func skipCourtOnboarding() {
+        skippedCourtOnboarding = true
     }
 
     func loadMap() async {

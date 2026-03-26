@@ -725,18 +725,18 @@ struct GameWithCountsRow: Decodable {
     let comment_count: Int?
 
     func toGame(participants: [GameParticipantRow], profilesByID: [String: ProfileSummaryRow]) -> Game {
-        let teamA = participants.filter { $0.team_side == "A" }.map {
-            let profile = profilesByID[$0.user_id]
-            PlayerRef(
-                id: $0.user_id,
+        let teamA = participants.filter { $0.team_side == "A" }.map { p -> PlayerRef in
+            let profile = profilesByID[p.user_id]
+            return PlayerRef(
+                id: p.user_id,
                 displayName: profile?.display_name ?? "Player",
                 avatarURL: profile?.avatar_url
             )
         }
-        let teamB = participants.filter { $0.team_side == "B" }.map {
-            let profile = profilesByID[$0.user_id]
-            PlayerRef(
-                id: $0.user_id,
+        let teamB = participants.filter { $0.team_side == "B" }.map { p -> PlayerRef in
+            let profile = profilesByID[p.user_id]
+            return PlayerRef(
+                id: p.user_id,
                 displayName: profile?.display_name ?? "Player",
                 avatarURL: profile?.avatar_url
             )
@@ -797,10 +797,10 @@ struct ScheduledGameRow: Decodable {
         court: CourtSummaryRow?,
         participantProfilesByID: [String: ProfileSummaryRow]
     ) -> ScheduledGame {
-        let confirmed = participants.map {
-            let profile = participantProfilesByID[$0.user_id]
-            PlayerRef(
-                id: $0.user_id,
+        let confirmed = participants.map { p -> PlayerRef in
+            let profile = participantProfilesByID[p.user_id]
+            return PlayerRef(
+                id: p.user_id,
                 displayName: profile?.display_name ?? "Player",
                 avatarURL: profile?.avatar_url
             )

@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import CoreLocation
 
 struct CourtMapView: View {
     private static let fallbackRegion = MKCoordinateRegion(
@@ -14,11 +15,15 @@ struct CourtMapView: View {
     @State private var position: MapCameraPosition = .automatic
     @State private var selectedCourt: Court? = nil
     @State private var showAddCourt: Bool = false
+    @State private var loadFailed: Bool = false
+    @State private var locationManager = CLLocationManager()
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Map(position: $position) {
+                    UserAnnotation()
+
                     ForEach(appState.courts) { court in
                         Annotation(court.name, coordinate: court.coordinate) {
                             courtPin(court: court)
@@ -39,7 +44,10 @@ struct CourtMapView: View {
 
                     Spacer()
 
-                    if let court = selectedCourt {
+                    if loadFailed && appState.courts.isEmpty {
+                        networkErrorCard
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else if let court = selectedCourt {
                         courtDetailCard(court: court)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     } else if onboardingMode {
@@ -52,8 +60,13 @@ struct CourtMapView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
-                if !onboardingMode {
-                    ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .cancellationAction) {
+                    if onboardingMode {
+                        Button("Skip for Now") {
+                            appState.skipCourtOnboarding()
+                        }
+                        .tint(Theme.textSecondary)
+                    } else {
                         Button("Done") { dismiss() }.tint(Theme.orange)
                     }
                 }
@@ -66,7 +79,11 @@ struct CourtMapView: View {
                 }
             }
             .task {
+                locationManager.requestWhenInUseAuthorization()
+
                 await appState.loadMap()
+                loadFailed = appState.errorMessage != nil && appState.courts.isEmpty
+
                 if let localCourt = appState.localCourt {
                     position = .region(
                         MKCoordinateRegion(
@@ -82,7 +99,7 @@ struct CourtMapView: View {
                         )
                     )
                 } else {
-                    position = .region(Self.fallbackRegion)
+                    position = .userLocation(fallback: .region(Self.fallbackRegion))
                 }
             }
             .sheet(isPresented: $showAddCourt) {
@@ -123,13 +140,48 @@ struct CourtMapView: View {
             Text("No court selected yet")
                 .font(.headline)
                 .foregroundStyle(Theme.textPrimary)
-            Text("Search for one you know, or add it yourself and we will make it your local court right away.")
+            Text("Tap a court pin on the map, or add a new one and we'll make it your local court right away.")
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondary)
-            Button("Add New Court", systemImage: "plus.circle.fill") {
-                showAddCourt = true
+            HStack(spacing: 12) {
+                Button("Add New Court", systemImage: "plus.circle.fill") {
+                    showAddCourt = true
+                }
+                .tint(Theme.orange)
             }
-            .tint(Theme.orange)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+    }
+
+    private var networkErrorCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.slash")
+                    .foregroundStyle(Theme.orange)
+                Text("Couldn't load courts")
+                    .font(.headline)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+            Text("Check your connection and try again, or add a court manually.")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
+            HStack(spacing: 12) {
+                Button("Retry") {
+                    loadFailed = false
+                    Task { await appState.loadMap() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.orange)
+
+                Button("Add Court Instead") {
+                    showAddCourt = true
+                }
+                .tint(Theme.orange)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
