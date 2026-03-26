@@ -1,5 +1,6 @@
 node_modules
 .env
+.env.*
 .expo
 
 # Xcode
@@ -19,5 +20,18 @@ Package.resolved
 *.swp
 *~
 
+# Secrets — NEVER commit these
+Config.swift
+*.xcconfig.local
+secrets/
+
+# Claude Code — personal settings (shared settings.json IS committed)
+.claude/settings.local.json
+.claude/worktrees/
+
 # Reference text files (keep out of repo)
 *.txt
+
+# Binary docs that shouldn't be in source control
+*.pdf
+*.rtf
