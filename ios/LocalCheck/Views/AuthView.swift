@@ -11,28 +11,24 @@ struct AuthView: View {
     private enum Mode: String, CaseIterable, Identifiable {
         case signIn = "Sign In"
         case signUp = "Create Account"
-
         var id: String { rawValue }
     }
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [Theme.surface, Theme.surfaceElevated, Theme.orangeDark.opacity(0.7)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            Theme.surface.ignoresSafeArea()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    hero
-                    authCard
+                VStack(spacing: 32) {
+                    logo
+                    authForm
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 28)
+                .padding(.horizontal, Theme.screenPadding)
+                .padding(.top, 48)
+                .padding(.bottom, 32)
             }
             .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
         }
         .onChange(of: mode) { _, _ in
             appState.authNotice = nil
@@ -40,65 +36,51 @@ struct AuthView: View {
         }
     }
 
-    private var hero: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Theme.orange.opacity(0.16))
-                        .frame(width: 74, height: 74)
-                    Image(systemName: "basketball.fill")
-                        .font(.system(size: 30, weight: .black))
-                        .foregroundStyle(Theme.orange)
-                }
+    // MARK: - Logo
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("LocalCheck")
-                        .font(.system(size: 30, weight: .black, design: .rounded))
-                        .foregroundStyle(Theme.textPrimary)
-                    Text("Know the run before you lace up.")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.textSecondary)
-                }
+    private var logo: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Theme.orange.opacity(0.12))
+                    .frame(width: 72, height: 72)
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(Theme.orange)
             }
 
-            Text("Find courts, see who checked in, schedule runs, and build your local reputation without group-text chaos.")
-                .font(.title3.weight(.semibold))
+            Text("LocalCheck")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundStyle(Theme.textPrimary)
 
-            HStack(spacing: 10) {
-                featurePill(title: "Live check-ins", icon: "mappin.circle.fill")
-                featurePill(title: "Scheduled runs", icon: "calendar.badge.clock")
-                featurePill(title: "ELO tracking", icon: "chart.line.uptrend.xyaxis")
-            }
+            Text("Your court. Your community.")
+                .font(.subheadline)
+                .foregroundStyle(Theme.textSecondary)
         }
+        .frame(maxWidth: .infinity)
     }
 
-    private func featurePill(title: String, icon: String) -> some View {
-        Label(title, systemImage: icon)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(Theme.textPrimary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Theme.surfaceCard.opacity(0.9), in: Capsule())
-    }
+    // MARK: - Auth form
 
-    private var authCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
+    private var authForm: some View {
+        VStack(spacing: 20) {
+            // Mode picker
             Picker("Mode", selection: $mode) {
-                ForEach(Mode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                ForEach(Mode.allCases) { m in
+                    Text(m.rawValue).tag(m)
                 }
             }
             .pickerStyle(.segmented)
 
+            // Notices
             if let notice = appState.authNotice {
-                messageCard(text: notice, tint: Theme.green)
+                noticeCard(text: notice, tint: Theme.green)
             }
 
+            // Fields
             VStack(spacing: 14) {
                 if mode == .signUp {
-                    inputField(
+                    field(
                         title: "Display Name",
                         text: $displayName,
                         keyboard: .default,
@@ -106,90 +88,102 @@ struct AuthView: View {
                         capitalization: .words
                     )
                 }
-                inputField(
+
+                field(
                     title: "Email",
                     text: $email,
                     keyboard: .emailAddress,
                     contentType: .emailAddress,
                     capitalization: .never
                 )
+
                 SecureField("Password", text: $password)
                     .textContentType(mode == .signUp ? .newPassword : .password)
-                    .padding(.horizontal, 14)
-                    .frame(height: 52)
-                    .background(Theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .padding(.horizontal, 16)
+                    .frame(height: Theme.inputHeight)
+                    .background(Theme.surfaceCard, in: RoundedRectangle(cornerRadius: Theme.inputCornerRadius, style: .continuous))
                     .foregroundStyle(Theme.textPrimary)
             }
 
+            // Sign in / up button
             Button {
                 submit()
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     if appState.isAuthenticating {
-                        ProgressView()
-                            .tint(.white)
+                        ProgressView().tint(.white)
                     }
-                    Text(primaryActionTitle)
-                        .font(.headline)
+                    Text(mode == .signIn ? "Sign In" : "Create Account")
+                        .font(.body.weight(.semibold))
                 }
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 54)
-                .background(canSubmit ? Theme.orange : Theme.surfaceCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .frame(height: Theme.buttonHeight)
+                .background(
+                    canSubmit ? Theme.orange : Theme.surfaceCard,
+                    in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                )
             }
             .disabled(!canSubmit)
 
-            HStack {
-                Rectangle()
-                    .fill(Theme.surfaceBorder)
-                    .frame(height: 1)
-                Text("or")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.textTertiary)
-                Rectangle()
-                    .fill(Theme.surfaceBorder)
-                    .frame(height: 1)
+            // Divider
+            HStack(spacing: 12) {
+                Rectangle().fill(Theme.surfaceBorder).frame(height: 1)
+                Text("or").font(.footnote.weight(.medium)).foregroundStyle(Theme.textTertiary)
+                Rectangle().fill(Theme.surfaceBorder).frame(height: 1)
             }
 
+            // Apple sign in
             Button {
-                appState.authNotice = "Apple sign-in will be enabled closer to launch. Use email and password for preview builds on your phone."
+                appState.authNotice = "Apple Sign-In will be enabled closer to launch. Use email for now."
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "apple.logo")
-                        .font(.headline)
+                        .font(.body.weight(.semibold))
                     Text("Continue with Apple")
-                        .font(.headline)
+                        .font(.body.weight(.semibold))
                     Spacer()
                     Text("Soon")
-                        .font(.caption.bold())
+                        .font(.caption2.bold())
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Theme.surfaceBorder, in: Capsule())
                 }
                 .foregroundStyle(Theme.textPrimary)
                 .frame(maxWidth: .infinity)
-                .frame(height: 52)
+                .frame(height: Theme.buttonHeight)
                 .padding(.horizontal, 16)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(
+                    Color.white.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
                 }
             }
 
-            Text(mode == .signUp ? "Email and password is the active preview path. Apple sign-in stays visible here so the launch direction is clear." : "Use the same email account across phone and simulator while we finish the rest of the product flow.")
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
+            Text(mode == .signUp
+                 ? "We'll never share your email. Apple Sign-In coming soon."
+                 : "Sign in with the same account across all your devices.")
+                .font(.footnote)
+                .foregroundStyle(Theme.textTertiary)
+                .multilineTextAlignment(.center)
         }
-        .padding(22)
-        .background(Theme.surfaceElevated.opacity(0.96), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .padding(Theme.screenPadding)
+        .background(
+            Theme.surfaceElevated,
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(Theme.surfaceBorder, lineWidth: 1)
         }
     }
 
-    private func inputField(
+    // MARK: - Components
+
+    private func field(
         title: String,
         text: Binding<String>,
         keyboard: UIKeyboardType,
@@ -201,20 +195,22 @@ struct AuthView: View {
             .textInputAutocapitalization(capitalization)
             .autocorrectionDisabled()
             .textContentType(contentType)
-            .padding(.horizontal, 14)
-            .frame(height: 52)
-            .background(Theme.surfaceCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 16)
+            .frame(height: Theme.inputHeight)
+            .background(Theme.surfaceCard, in: RoundedRectangle(cornerRadius: Theme.inputCornerRadius, style: .continuous))
             .foregroundStyle(Theme.textPrimary)
     }
 
-    private func messageCard(text: String, tint: Color) -> some View {
+    private func noticeCard(text: String, tint: Color) -> some View {
         Text(text)
-            .font(.caption.weight(.medium))
+            .font(.footnote.weight(.medium))
             .foregroundStyle(tint)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: Theme.inputCornerRadius, style: .continuous))
     }
+
+    // MARK: - Logic
 
     private var canSubmit: Bool {
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -223,19 +219,9 @@ struct AuthView: View {
         return !trimmedEmail.isEmpty && password.count >= 6 && hasName && !appState.isAuthenticating
     }
 
-    private var primaryActionTitle: String {
-        switch mode {
-        case .signIn:
-            return "Sign In"
-        case .signUp:
-            return "Create Account"
-        }
-    }
-
     private func submit() {
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-
         Task {
             switch mode {
             case .signIn:
